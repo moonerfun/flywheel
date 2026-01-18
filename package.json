@@ -1,0 +1,50 @@
+{
+  "name": "@launchpad/flywheel",
+  "version": "1.0.0",
+  "description": "Flywheel service for automated buyback and burn mechanics",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsup src/index.ts --format esm --dts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:seed": "tsx src/db/seed.ts",
+    "collect": "tsx src/scripts/collect.ts",
+    "buyback": "tsx src/scripts/buyback.ts",
+    "burn": "tsx src/scripts/burn.ts",
+    "status": "tsx src/scripts/status.ts",
+    "register": "tsx src/scripts/register.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.30.1",
+    "@meteora-ag/dynamic-bonding-curve-sdk": "^1.2.35",
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "bn.js": "^5.2.1",
+    "bs58": "^6.0.0",
+    "cors": "^2.8.5",
+    "decimal.js": "^10.4.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "node-cron": "^3.0.3",
+    "pino": "^9.3.2",
+    "pino-pretty": "^11.2.2"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.5",
+    "@types/node-cron": "^3.0.11",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
