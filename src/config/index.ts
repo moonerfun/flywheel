@@ -51,6 +51,8 @@ export const config = {
     minBuybackSol: parseFloat(process.env.MIN_BUYBACK_THRESHOLD || '0.1'),
     slippageBps: parseInt(process.env.SLIPPAGE_BPS || '100', 10),
     minAllocationSol: parseFloat(process.env.MIN_ALLOCATION_SOL || '0.001'), // Min SOL per token buyback
+    buybackPercentage: parseFloat(process.env.BUYBACK_PERCENTAGE || '80'), // % of available SOL to use
+    reserveSol: parseFloat(process.env.RESERVE_SOL || '0.1'), // SOL to always keep in wallet
   },
 
   // Retry Configuration

@@ -220,8 +220,8 @@ export async function executeBuyback(solAmount?: number): Promise<BuybackResult>
     const walletBalance = await getWalletBalance();
     const minBuyback = config.thresholds.minBuybackSol;
 
-    // Reserve some SOL for transaction fees (0.01 SOL)
-    const availableBalance = walletBalance - 0.01;
+    // Reserve SOL for transaction fees (configurable)
+    const availableBalance = walletBalance - config.thresholds.reserveSol;
 
     if (solAmount) {
       result.solAmount = Math.min(solAmount, availableBalance);
@@ -346,8 +346,8 @@ export async function shouldExecuteBuyback(): Promise<{
   const balance = await getWalletBalance();
   const threshold = config.thresholds.minBuybackSol;
 
-  // Reserve for fees
-  const availableBalance = balance - 0.01;
+  // Reserve for fees (configurable)
+  const availableBalance = balance - config.thresholds.reserveSol;
 
   return {
     shouldBuyback: availableBalance >= threshold,
@@ -470,12 +470,16 @@ export async function executeMultiBuyback(totalSolAmount?: number): Promise<Mult
   try {
     // Determine total amount to spend
     const walletBalance = await getWalletBalance();
-    const reserveForFees = 0.05; // Reserve more SOL for multiple transactions
+    const reserveForFees = config.thresholds.reserveSol; // Configurable reserve
     const availableBalance = walletBalance - reserveForFees;
+    
+    // Apply buyback percentage (default 80%)
+    const percentageMultiplier = config.thresholds.buybackPercentage / 100;
+    const maxBuybackAmount = availableBalance * percentageMultiplier;
 
     const solToSpend = totalSolAmount
-      ? Math.min(totalSolAmount, availableBalance)
-      : availableBalance;
+      ? Math.min(totalSolAmount, maxBuybackAmount)
+      : maxBuybackAmount;
 
     if (solToSpend < config.thresholds.minBuybackSol) {
       log.info({ balance: walletBalance, required: config.thresholds.minBuybackSol }, 'Insufficient balance for multi-buyback');
