@@ -91,6 +91,47 @@ export async function getActivePools(): Promise<FlywheelPool[]> {
 }
 
 /**
+ * Get all migrated pools (DAMM v2)
+ */
+export async function getMigratedPools(): Promise<FlywheelPool[]> {
+  const supabase = getSupabaseUntyped();
+
+  const { data, error } = await supabase
+    .from('flywheel_pools')
+    .select('*')
+    .eq('is_migrated', true)
+    .not('damm_pool_address', 'is', null)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    log.error({ error }, 'Failed to fetch migrated pools');
+    throw new Error(`Failed to fetch migrated pools: ${error.message}`);
+  }
+
+  return (data || []) as FlywheelPool[];
+}
+
+/**
+ * Get all pools (active + migrated)
+ */
+export async function getAllCollectablePools(): Promise<FlywheelPool[]> {
+  const supabase = getSupabaseUntyped();
+
+  const { data, error } = await supabase
+    .from('flywheel_pools')
+    .select('*')
+    .in('status', ['active', 'migrated'])
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    log.error({ error }, 'Failed to fetch collectable pools');
+    throw new Error(`Failed to fetch collectable pools: ${error.message}`);
+  }
+
+  return (data || []) as FlywheelPool[];
+}
+
+/**
  * Get pool by address
  */
 export async function getPoolByAddress(poolAddress: string): Promise<FlywheelPool | null> {

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS flywheel_pools (
   name TEXT,
   symbol TEXT,
   is_migrated BOOLEAN DEFAULT FALSE,
+  damm_pool_address TEXT, -- DAMM v2 pool address after migration
   status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'migrated')),
   
   -- Marketcap tracking (for proportional buyback allocation)

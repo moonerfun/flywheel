@@ -2,10 +2,11 @@ import cron from 'node-cron';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { collectAllFees } from '../services/collector.js';
+import { collectAllDammV2Fees } from '../services/collector-dammv2.js';
 import { executeMultiBuyback, shouldExecuteBuyback } from '../services/buyback.js';
 import { burnAllTokens } from '../services/burner.js';
 import { updateAllMarketcaps } from '../services/marketcap.js';
-import { discoverPlatformPools } from '../services/discovery.js';
+import { discoverPlatformPools, updateMigrationStatus } from '../services/discovery.js';
 import { processRetryQueue, cleanupRetryQueue } from '../services/retry.js';
 
 const log = logger.child({ module: 'scheduler' });
@@ -20,7 +21,7 @@ interface ScheduledTask {
 const tasks: Map<string, ScheduledTask> = new Map();
 
 /**
- * Fee collection task - collects partner fees from all pools
+ * Fee collection task - collects partner fees from DBC pools AND LP fees from DAMM v2 pools
  */
 async function feeCollectionTask(): Promise<void> {
   const taskInfo = tasks.get('fee_collection');
@@ -35,14 +36,28 @@ async function feeCollectionTask(): Promise<void> {
 
   try {
     log.info('Running scheduled fee collection');
-    const result = await collectAllFees();
+
+    // Collect from DBC pools (partner fees)
+    const dbcResult = await collectAllFees();
     log.info(
       {
-        pools: result.totalPoolsProcessed,
-        collected: result.totalQuoteCollected,
+        pools: dbcResult.totalPoolsProcessed,
+        collected: dbcResult.totalQuoteCollected,
       },
-      'Scheduled fee collection completed'
+      'DBC fee collection completed'
     );
+
+    // Collect from DAMM v2 pools (LP fees from migrated pools)
+    const dammResult = await collectAllDammV2Fees();
+    log.info(
+      {
+        pools: dammResult.totalPoolsProcessed,
+        solCollected: dammResult.totalSolCollected,
+        tokensCollected: dammResult.totalTokensCollected,
+      },
+      'DAMM v2 fee collection completed'
+    );
+
   } catch (error) {
     log.error({ error }, 'Scheduled fee collection failed');
   } finally {
@@ -144,7 +159,7 @@ async function marketcapTask(): Promise<void> {
 }
 
 /**
- * Discovery task - discovers missing pools from on-chain
+ * Discovery task - discovers missing pools from on-chain and checks migration status
  */
 async function discoveryTask(): Promise<void> {
   const taskInfo = tasks.get('discovery');
@@ -159,11 +174,22 @@ async function discoveryTask(): Promise<void> {
 
   try {
     log.info('Running scheduled pool discovery');
+    
+    // Discover new pools
     const result = await discoverPlatformPools();
     log.info(
       { discovered: result.poolsDiscovered, new: result.poolsNew, existing: result.poolsExisting },
       'Scheduled pool discovery completed'
     );
+
+    // Check migration status for existing pools
+    const migrationResult = await updateMigrationStatus();
+    if (migrationResult.migratedFound > 0) {
+      log.info(
+        { checked: migrationResult.checked, migrated: migrationResult.migratedFound },
+        'Migration status update completed'
+      );
+    }
   } catch (error) {
     log.error({ error }, 'Scheduled pool discovery failed');
   } finally {

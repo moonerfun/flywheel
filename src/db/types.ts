@@ -15,6 +15,7 @@ export interface Database {
           name: string | null;
           symbol: string | null;
           is_migrated: boolean;
+          damm_pool_address: string | null;
           status: 'active' | 'inactive' | 'migrated';
           // Marketcap tracking
           current_marketcap_usd: number;
@@ -43,6 +44,7 @@ export interface Database {
           name?: string | null;
           symbol?: string | null;
           is_migrated?: boolean;
+          damm_pool_address?: string | null;
           status?: 'active' | 'inactive' | 'migrated';
           current_marketcap_usd?: number;
           current_price_usd?: number;
@@ -69,6 +71,7 @@ export interface Database {
           name?: string | null;
           symbol?: string | null;
           is_migrated?: boolean;
+          damm_pool_address?: string | null;
           status?: 'active' | 'inactive' | 'migrated';
           current_marketcap_usd?: number;
           current_price_usd?: number;
@@ -94,7 +97,7 @@ export interface Database {
           quote_amount: number;
           base_amount: number;
           tx_signature: string;
-          fee_type: 'partner' | 'creator' | 'protocol';
+          fee_type: 'partner' | 'creator' | 'protocol' | 'damm_v2_lp';
           claimed_at: string;
         };
         Insert: {
@@ -104,7 +107,7 @@ export interface Database {
           quote_amount: number;
           base_amount?: number;
           tx_signature: string;
-          fee_type?: 'partner' | 'creator' | 'protocol';
+          fee_type?: 'partner' | 'creator' | 'protocol' | 'damm_v2_lp';
           claimed_at?: string;
         };
         Update: {
@@ -114,7 +117,7 @@ export interface Database {
           quote_amount?: number;
           base_amount?: number;
           tx_signature?: string;
-          fee_type?: 'partner' | 'creator' | 'protocol';
+          fee_type?: 'partner' | 'creator' | 'protocol' | 'damm_v2_lp';
           claimed_at?: string;
         };
       };

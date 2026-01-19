@@ -3,7 +3,7 @@ import { getSupabaseUntyped, type FlywheelPool } from '../db/index.js';
 import { getConnection } from '../solana/index.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
-import { getActivePools } from './registry.js';
+import { getActivePools, getAllCollectablePools, getMigratedPools } from './registry.js';
 
 const log = logger.child({ module: 'marketcap' });
 
@@ -236,7 +236,8 @@ export async function updateAllMarketcaps(): Promise<MarketcapUpdateResult> {
   };
 
   try {
-    const pools = await getActivePools();
+    // Update marketcap for ALL pools (active + migrated)
+    const pools = await getAllCollectablePools();
 
     log.info({ poolCount: pools.length }, 'Updating marketcap for pools');
 
@@ -260,11 +261,11 @@ export async function updateAllMarketcaps(): Promise<MarketcapUpdateResult> {
     // Update marketcap ranks
     await supabase.rpc('update_marketcap_ranks');
 
-    // Calculate total marketcap
+    // Calculate total marketcap (both active and migrated)
     const { data: stats } = await supabase
       .from('flywheel_pools')
       .select('current_marketcap_usd')
-      .eq('status', 'active');
+      .in('status', ['active', 'migrated']);
 
     if (stats) {
       result.totalMarketcap = (stats as Array<{ current_marketcap_usd: number }>).reduce(
@@ -301,6 +302,7 @@ export async function updateAllMarketcaps(): Promise<MarketcapUpdateResult> {
 /**
  * Get buyback allocations based on marketcap
  * Higher marketcap = higher allocation percentage
+ * NOTE: Only migrated tokens participate in buyback - non-migrated tokens do not benefit from the flywheel effect
  */
 export async function getBuybackAllocations(): Promise<
   Array<{
@@ -317,37 +319,55 @@ export async function getBuybackAllocations(): Promise<
       .from('buyback_allocations')
       .select('*');
 
-    if (!allocations || allocations.length === 0) {
-      // Fallback: equal distribution
-      const pools = await getActivePools();
-      const equalPercent = pools.length > 0 ? 100 / pools.length : 0;
+    // Only include migrated pools for buyback allocations
+    const migratedPools = await getMigratedPools();
+    const migratedPoolIds = new Set(migratedPools.map((p) => p.id));
 
-      return pools.map((pool) => ({
+    if (!allocations || allocations.length === 0) {
+      // Fallback: equal distribution across migrated pools only
+      const equalPercent = migratedPools.length > 0 ? 100 / migratedPools.length : 0;
+
+      log.info(
+        { migratedPoolCount: migratedPools.length },
+        'Using equal distribution for migrated pools buyback'
+      );
+
+      return migratedPools.map((pool) => ({
         pool,
         allocationPercent: equalPercent,
         allocatedSol: 0, // Will be calculated when executing
       }));
     }
 
-    // Get full pool data
-    const pools = await getActivePools();
-    const poolMap = new Map(pools.map((p) => [p.id, p]));
+    // Build pool map from migrated pools only
+    const poolMap = new Map(migratedPools.map((p) => [p.id, p]));
 
-    return (allocations as Array<{ pool_id: string; allocation_percent: number }>)
-      .filter((a) => poolMap.has(a.pool_id))
-      .map((a) => ({
-        pool: poolMap.get(a.pool_id)!,
-        allocationPercent: a.allocation_percent,
-        allocatedSol: 0,
-      }));
+    // Filter allocations to only include migrated pools
+    const filteredAllocations = (allocations as Array<{ pool_id: string; allocation_percent: number }>)
+      .filter((a) => migratedPoolIds.has(a.pool_id) && poolMap.has(a.pool_id));
+
+    // Recalculate percentages so they sum to 100% for migrated pools only
+    const totalPercent = filteredAllocations.reduce((sum, a) => sum + a.allocation_percent, 0);
+    const scaleFactor = totalPercent > 0 ? 100 / totalPercent : 0;
+
+    log.info(
+      { migratedPoolCount: filteredAllocations.length, totalPercent, scaleFactor },
+      'Calculated buyback allocations for migrated pools'
+    );
+
+    return filteredAllocations.map((a) => ({
+      pool: poolMap.get(a.pool_id)!,
+      allocationPercent: a.allocation_percent * scaleFactor,
+      allocatedSol: 0,
+    }));
   } catch (error) {
     log.error({ error }, 'Failed to get buyback allocations');
 
-    // Fallback: equal distribution
-    const pools = await getActivePools();
-    const equalPercent = pools.length > 0 ? 100 / pools.length : 0;
+    // Fallback: equal distribution across migrated pools only
+    const migratedPools = await getMigratedPools();
+    const equalPercent = migratedPools.length > 0 ? 100 / migratedPools.length : 0;
 
-    return pools.map((pool) => ({
+    return migratedPools.map((pool) => ({
       pool,
       allocationPercent: equalPercent,
       allocatedSol: 0,
@@ -366,7 +386,7 @@ export async function getTopPoolsByMarketcap(
   const { data, error } = await supabase
     .from('flywheel_pools')
     .select('*')
-    .eq('status', 'active')
+    .in('status', ['active', 'migrated'])
     .gt('current_marketcap_usd', 0)
     .order('current_marketcap_usd', { ascending: false })
     .limit(limit);

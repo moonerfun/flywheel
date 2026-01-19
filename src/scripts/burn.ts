@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { burnTokens, burnAllTokens, getNativeTokenBalance, getTotalBurned } from '../services/burner.js';
-import { getActivePools } from '../services/registry.js';
+import { getAllCollectablePools } from '../services/registry.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 
@@ -16,10 +16,10 @@ async function main(): Promise<void> {
 
     if (isMultiToken) {
       // Multi-token burn mode
-      const pools = await getActivePools();
+      const pools = await getAllCollectablePools();
       console.log('\n🔥 Multi-Token Burn Status:');
       console.log('─'.repeat(40));
-      console.log(`Active Pools: ${pools.length}`);
+      console.log(`Collectable Pools: ${pools.length}`);
       console.log('─'.repeat(40));
 
       console.log('\n🔥 Executing multi-token burn...');

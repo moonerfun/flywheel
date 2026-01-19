@@ -9,7 +9,7 @@ import { getSupabaseUntyped, type BurnInsert, type FlywheelPool } from '../db/in
 import { getConnection, getFlywheelWallet } from '../solana/index.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
-import { getActivePools } from './registry.js';
+import { getAllCollectablePools, getMigratedPools } from './registry.js';
 
 const log = logger.child({ module: 'burner' });
 
@@ -67,7 +67,7 @@ export async function getNativeTokenBalance(): Promise<number> {
   }
 
   // Sum all token balances
-  const pools = await getActivePools();
+  const pools = await getAllCollectablePools();
   let total = 0;
   for (const pool of pools) {
     total += await getTokenBalance(pool.base_mint);
@@ -177,7 +177,8 @@ export async function burnTokensForPool(
 }
 
 /**
- * Burn all tokens across all pools
+ * Burn all tokens across migrated pools only
+ * NOTE: Only migrated tokens participate in burn - non-migrated tokens do not benefit from the flywheel effect
  */
 export async function burnAllTokens(): Promise<MultiBurnResult> {
   const supabase = getSupabaseUntyped();
@@ -192,7 +193,7 @@ export async function burnAllTokens(): Promise<MultiBurnResult> {
   };
 
   try {
-    log.info('Starting multi-token burn');
+    log.info('Starting multi-token burn (migrated pools only)');
 
     // Log operation start
     await supabase.from('operation_logs').insert({
@@ -201,10 +202,30 @@ export async function burnAllTokens(): Promise<MultiBurnResult> {
       details: { scope: 'multi_token' },
     });
 
-    const pools = await getActivePools();
+    // Only burn tokens for migrated pools - non-migrated tokens don't benefit from flywheel
+    const pools = await getMigratedPools();
+
+    log.info({ migratedPoolCount: pools.length }, 'Burning tokens for migrated pools only');
+
+    // Build list of excluded mints
+    const excludedMints = new Set(config.burn?.excludeMints || []);
+    // Also exclude native token if configured
+    if (config.burn?.excludeNativeToken && config.token?.nativeMint) {
+      excludedMints.add(config.token.nativeMint);
+    }
+
+    if (excludedMints.size > 0) {
+      log.info({ excludedMints: Array.from(excludedMints) }, 'Excluding mints from burn');
+    }
 
     for (const pool of pools) {
       result.poolsProcessed++;
+
+      // Skip excluded mints
+      if (excludedMints.has(pool.base_mint)) {
+        log.info({ poolAddress: pool.pool_address, baseMint: pool.base_mint }, 'Skipping excluded token from burn');
+        continue;
+      }
 
       // Check if we have any tokens for this pool
       const balance = await getTokenBalance(pool.base_mint);
@@ -295,6 +316,7 @@ export async function burnTokens(amount?: number, buybackId?: string): Promise<B
       name: null,
       symbol: null,
       is_migrated: false,
+      damm_pool_address: null,
       status: 'active',
       current_marketcap_usd: 0,
       current_price_usd: 0,

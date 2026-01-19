@@ -1,5 +1,6 @@
 import { PublicKey } from '@solana/web3.js';
 import { DynamicBondingCurveClient } from '@meteora-ag/dynamic-bonding-curve-sdk';
+import { CpAmm } from '@meteora-ag/cp-amm-sdk';
 import { getSupabaseUntyped, type FlywheelPool } from '../db/index.js';
 import { getConnection } from '../solana/index.js';
 import { config } from '../config/index.js';
@@ -226,13 +227,13 @@ async function discoverPoolsByProgramAccounts(configKey: string): Promise<string
 }
 
 /**
- * Discover all pools using the platform's config key
+ * Discover all pools using the platform's config keys (supports multiple)
  */
 export async function discoverPlatformPools(): Promise<DiscoveryResult> {
-  const platformConfigKey = config.discovery?.configKey;
+  const platformConfigKeys = config.discovery?.configKeys || [];
 
-  if (!platformConfigKey) {
-    log.warn('No platform config key configured for discovery');
+  if (platformConfigKeys.length === 0) {
+    log.warn('No platform config keys configured for discovery');
     return {
       poolsDiscovered: 0,
       poolsNew: 0,
@@ -241,7 +242,30 @@ export async function discoverPlatformPools(): Promise<DiscoveryResult> {
     };
   }
 
-  return discoverPoolsByConfig(platformConfigKey);
+  // Aggregate results from all config keys
+  const aggregatedResult: DiscoveryResult = {
+    poolsDiscovered: 0,
+    poolsNew: 0,
+    poolsExisting: 0,
+    errors: [],
+  };
+
+  for (const configKey of platformConfigKeys) {
+    log.info({ configKey }, 'Discovering pools for config key');
+    const result = await discoverPoolsByConfig(configKey);
+    
+    aggregatedResult.poolsDiscovered += result.poolsDiscovered;
+    aggregatedResult.poolsNew += result.poolsNew;
+    aggregatedResult.poolsExisting += result.poolsExisting;
+    aggregatedResult.errors.push(...result.errors);
+  }
+
+  log.info(
+    { configKeysCount: platformConfigKeys.length, ...aggregatedResult },
+    'Completed discovery across all config keys'
+  );
+
+  return aggregatedResult;
 }
 
 /**
@@ -251,27 +275,33 @@ export async function syncMissingPools(): Promise<{
   synced: number;
   errors: number;
 }> {
-  const supabase = getSupabaseUntyped();
-  const platformConfigKey = config.discovery?.configKey;
+  const platformConfigKeys = config.discovery?.configKeys || [];
 
-  if (!platformConfigKey) {
+  if (platformConfigKeys.length === 0) {
     return { synced: 0, errors: 0 };
   }
 
-  log.info('Syncing missing pools');
+  log.info({ configKeysCount: platformConfigKeys.length }, 'Syncing missing pools across all config keys');
 
-  try {
-    // Discover all pools on-chain
-    const discovery = await discoverPoolsByConfig(platformConfigKey);
+  let totalSynced = 0;
+  let totalErrors = 0;
 
-    return {
-      synced: discovery.poolsNew,
-      errors: discovery.errors.length,
-    };
-  } catch (error) {
-    log.error({ error }, 'Failed to sync missing pools');
-    return { synced: 0, errors: 1 };
+  for (const configKey of platformConfigKeys) {
+    try {
+      // Discover all pools on-chain for this config key
+      const discovery = await discoverPoolsByConfig(configKey);
+      totalSynced += discovery.poolsNew;
+      totalErrors += discovery.errors.length;
+    } catch (error) {
+      log.error({ error, configKey }, 'Failed to sync missing pools for config key');
+      totalErrors++;
+    }
   }
+
+  return {
+    synced: totalSynced,
+    errors: totalErrors,
+  };
 }
 
 /**
@@ -305,4 +335,175 @@ export async function getLastDiscoverySync(
     poolsDiscovered: syncData.pools_discovered,
     status: syncData.sync_status,
   };
+}
+
+/**
+ * Check if a DBC pool is migrated and get its DAMM v2 address
+ */
+export async function checkPoolMigration(poolAddress: string): Promise<{
+  isMigrated: boolean;
+  migrationProgress: number;
+  dammPoolAddress: string | null;
+}> {
+  const connection = getConnection();
+
+  try {
+    const client = new DynamicBondingCurveClient(connection, 'confirmed');
+    const poolPubkey = new PublicKey(poolAddress);
+
+    const poolState = await client.state.getPool(poolPubkey);
+
+    if (!poolState) {
+      return { isMigrated: false, migrationProgress: 0, dammPoolAddress: null };
+    }
+
+    // Check if pool is migrated - check the numeric isMigrated field
+    const state = poolState as Record<string, unknown>;
+    const isMigratedValue = state.isMigrated as number | boolean | undefined;
+    const isMigrated = isMigratedValue === 1 || isMigratedValue === true;
+    const migrationProgress = (state.migrationProgress as number) || 0;
+
+    if (!isMigrated) {
+      return { isMigrated: false, migrationProgress, dammPoolAddress: null };
+    }
+
+    // DBC SDK doesn't expose the DAMM pool address directly
+    // We need to find it by scanning CP-AMM pools with this token
+    return { isMigrated, migrationProgress, dammPoolAddress: null };
+  } catch (error) {
+    log.error({ error, poolAddress }, 'Failed to check pool migration status');
+    return { isMigrated: false, migrationProgress: 0, dammPoolAddress: null };
+  }
+}
+
+/**
+ * Find DAMM v2 pool address by token mint
+ * Searches the CP-AMM program for pools containing the given token
+ */
+export async function findDammV2PoolByMint(tokenMint: string): Promise<string | null> {
+  const connection = getConnection();
+
+  try {
+    const cpAmm = new CpAmm(connection);
+    const mintPubkey = new PublicKey(tokenMint);
+
+    // Use fetchPoolStatesByTokenAMint to find pools where token is Token A
+    // (Migrated pools from DBC have the token as tokenA and SOL as tokenB)
+    const pools = await cpAmm.fetchPoolStatesByTokenAMint(mintPubkey);
+
+    if (pools && pools.length > 0) {
+      // Return the first pool found (should typically be the migrated pool)
+      const dammPoolAddress = pools[0].publicKey.toString();
+      log.info({ tokenMint, dammPoolAddress }, 'Found DAMM v2 pool by token mint');
+      return dammPoolAddress;
+    }
+
+    // No pool found with this token as Token A
+    log.debug({ tokenMint }, 'No DAMM v2 pool found for token mint');
+    return null;
+  } catch (error) {
+    log.error({ error, tokenMint }, 'Failed to find DAMM v2 pool by mint');
+    return null;
+  }
+}
+
+/**
+ * Update migration status for all pools
+ */
+export async function updateMigrationStatus(): Promise<{
+  checked: number;
+  migratedFound: number;
+  dammPoolsFound: number;
+  errors: number;
+}> {
+  const supabase = getSupabaseUntyped();
+  const connection = getConnection();
+
+  log.info('Checking pool migration status');
+
+  const result = {
+    checked: 0,
+    migratedFound: 0,
+    dammPoolsFound: 0,
+    errors: 0,
+  };
+
+  try {
+    // Get all DBC pools that either:
+    // 1. Aren't marked as migrated yet, OR
+    // 2. Are migrated but don't have a DAMM pool address
+    const { data: pools } = await supabase
+      .from('flywheel_pools')
+      .select('*')
+      .or('is_migrated.eq.false,and(is_migrated.eq.true,damm_pool_address.is.null)')
+      .in('status', ['active', 'migrated']);
+
+    if (!pools || pools.length === 0) {
+      log.info('No pools to check for migration');
+      return result;
+    }
+
+    const client = new DynamicBondingCurveClient(connection, 'confirmed');
+
+    for (const pool of pools) {
+      result.checked++;
+
+      try {
+        const poolPubkey = new PublicKey(pool.pool_address);
+        const poolState = await client.state.getPool(poolPubkey);
+
+        if (!poolState) {
+          continue;
+        }
+
+        // Check migration status
+        const state = poolState as Record<string, unknown>;
+        const isMigratedValue = state.isMigrated as number | boolean | undefined;
+        const isMigrated = isMigratedValue === 1 || isMigratedValue === true;
+
+        if (isMigrated) {
+          if (!pool.is_migrated) {
+            result.migratedFound++;
+          }
+
+          let dammPoolAddress = pool.damm_pool_address;
+
+          // If we don't have the DAMM pool address, try to find it
+          if (!dammPoolAddress) {
+            dammPoolAddress = await findDammV2PoolByMint(pool.base_mint);
+            if (dammPoolAddress) {
+              result.dammPoolsFound++;
+            }
+          }
+
+          // Update database
+          await supabase
+            .from('flywheel_pools')
+            .update({
+              is_migrated: true,
+              damm_pool_address: dammPoolAddress,
+              status: 'migrated',
+            })
+            .eq('id', pool.id);
+
+          log.info(
+            { poolAddress: pool.pool_address, dammPoolAddress, baseMint: pool.base_mint },
+            'Pool marked as migrated'
+          );
+        }
+
+        // Rate limiting
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      } catch (error) {
+        log.error({ error, poolAddress: pool.pool_address }, 'Failed to check pool migration');
+        result.errors++;
+      }
+    }
+
+    log.info(result, 'Migration status check completed');
+  } catch (error) {
+    log.error({ error }, 'Failed to update migration status');
+  }
+
+  return result;
 }
