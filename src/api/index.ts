@@ -347,6 +347,45 @@ app.post('/scheduler/trigger/:task', async (req: Request, res: Response) => {
 });
 
 // ============================================
+// Creator Rewards Endpoints
+// ============================================
+
+app.get('/pools/creator/:walletAddress', async (req: Request, res: Response) => {
+  try {
+    const { walletAddress } = req.params;
+    
+    if (!walletAddress) {
+      res.status(400).json({ error: 'Wallet address required' });
+      return;
+    }
+
+    const supabase = getSupabaseUntyped();
+    const { data, error } = await supabase
+      .from('flywheel_pools')
+      .select('*')
+      .eq('creator', walletAddress)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    // Return pools with migration status info
+    const poolsWithInfo = (data || []).map((pool: Record<string, unknown>) => ({
+      ...pool,
+      rewards_available: pool.is_migrated === true && pool.damm_pool_address !== null,
+    }));
+
+    res.json({
+      pools: poolsWithInfo,
+      total_pools: poolsWithInfo.length,
+      migrated_pools: poolsWithInfo.filter((p: { rewards_available: boolean }) => p.rewards_available).length,
+    });
+  } catch (error) {
+    log.error({ error }, 'Failed to get creator pools');
+    res.status(500).json({ error: 'Failed to get creator pools' });
+  }
+});
+
+// ============================================
 // Fee Claims & Buybacks History
 // ============================================
 
