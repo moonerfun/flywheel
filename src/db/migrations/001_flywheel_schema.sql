@@ -294,14 +294,14 @@ CREATE TRIGGER trigger_update_pool_counts_delete
 AFTER DELETE ON flywheel_pools
 FOR EACH ROW EXECUTE FUNCTION update_pool_counts();
 
--- Update marketcap ranks
+-- Update marketcap ranks (includes both active and migrated pools)
 CREATE OR REPLACE FUNCTION update_marketcap_ranks()
 RETURNS void AS $$
 BEGIN
   WITH ranked AS (
     SELECT id, ROW_NUMBER() OVER (ORDER BY current_marketcap_usd DESC) as rank
     FROM flywheel_pools
-    WHERE status = 'active' AND current_marketcap_usd > 0
+    WHERE status IN ('active', 'migrated') AND current_marketcap_usd > 0
   )
   UPDATE flywheel_pools p
   SET marketcap_rank = r.rank
@@ -311,6 +311,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Calculate buyback allocation based on marketcap
+-- NOTE: Only migrated tokens participate in buyback - they benefit from the flywheel effect
 CREATE OR REPLACE FUNCTION calculate_buyback_allocation()
 RETURNS TABLE(pool_id UUID, pool_address TEXT, base_mint TEXT, allocation_percent DECIMAL) AS $$
 DECLARE
@@ -318,18 +319,18 @@ DECLARE
 BEGIN
   SELECT COALESCE(SUM(current_marketcap_usd), 0) INTO total_mcap
   FROM flywheel_pools
-  WHERE status = 'active' AND current_marketcap_usd > 0;
+  WHERE status = 'migrated' AND current_marketcap_usd > 0;
   
   IF total_mcap = 0 THEN
     RETURN QUERY
     SELECT fp.id, fp.pool_address, fp.base_mint, 100.0 / NULLIF(COUNT(*) OVER (), 0)
     FROM flywheel_pools fp
-    WHERE fp.status = 'active';
+    WHERE fp.status = 'migrated';
   ELSE
     RETURN QUERY
     SELECT fp.id, fp.pool_address, fp.base_mint, (fp.current_marketcap_usd / total_mcap * 100)::DECIMAL
     FROM flywheel_pools fp
-    WHERE fp.status = 'active' AND fp.current_marketcap_usd > 0;
+    WHERE fp.status = 'migrated' AND fp.current_marketcap_usd > 0;
   END IF;
 END;
 $$ LANGUAGE plpgsql;

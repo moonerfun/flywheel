@@ -84,6 +84,10 @@ async function buybackTask(): Promise<void> {
   try {
     log.info('Running scheduled multi-token buyback');
 
+    // Update marketcap data before buyback to ensure accurate allocations
+    log.info('Updating marketcap data before buyback allocation');
+    await updateAllMarketcaps();
+
     // Check if buyback is needed
     const { shouldBuyback, balance, threshold } = await shouldExecuteBuyback();
 

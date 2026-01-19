@@ -156,8 +156,14 @@ export async function updatePoolMarketcap(pool: FlywheelPool): Promise<boolean> 
   const supabase = getSupabaseUntyped();
 
   try {
+    // For migrated pools, use DAMM pool address for DexScreener lookup
+    // For active pools (still on bonding curve), use the original pool address
+    const dexScreenerPoolAddress = pool.status === 'migrated' && pool.damm_pool_address
+      ? pool.damm_pool_address
+      : pool.pool_address;
+
     // Try DexScreener first (has more complete data)
-    let marketcapData = await getTokenMarketcapFromDexScreener(pool.pool_address);
+    let marketcapData = await getTokenMarketcapFromDexScreener(dexScreenerPoolAddress);
 
     if (!marketcapData || marketcapData.marketcap === 0) {
       // Fallback to Jupiter price + on-chain supply

@@ -92,6 +92,7 @@ export async function getActivePools(): Promise<FlywheelPool[]> {
 
 /**
  * Get all migrated pools (DAMM v2)
+ * Uses status = 'migrated' for consistency with SQL allocation functions
  */
 export async function getMigratedPools(): Promise<FlywheelPool[]> {
   const supabase = getSupabaseUntyped();
@@ -99,9 +100,8 @@ export async function getMigratedPools(): Promise<FlywheelPool[]> {
   const { data, error } = await supabase
     .from('flywheel_pools')
     .select('*')
-    .eq('is_migrated', true)
-    .not('damm_pool_address', 'is', null)
-    .order('created_at', { ascending: false });
+    .eq('status', 'migrated')
+    .order('current_marketcap_usd', { ascending: false });
 
   if (error) {
     log.error({ error }, 'Failed to fetch migrated pools');
