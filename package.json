@@ -18,7 +18,9 @@
     "buyback": "tsx src/scripts/buyback.ts",
     "burn": "tsx src/scripts/burn.ts",
     "status": "tsx src/scripts/status.ts",
-    "register": "tsx src/scripts/register.ts"
+    "register": "tsx src/scripts/register.ts",
+    "backfill": "tsx src/scripts/backfill.ts",
+    "metadata": "tsx src/scripts/metadata.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",
