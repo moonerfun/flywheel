@@ -7,8 +7,9 @@ import { getActivePools, getAllCollectablePools, getMigratedPools } from './regi
 
 const log = logger.child({ module: 'marketcap' });
 
-// Jupiter Price API
+// Jupiter APIs
 const JUPITER_PRICE_API = 'https://api.jup.ag/price/v2';
+const JUPITER_DATAPI = 'https://datapi.jup.ag';
 
 // DexScreener API for marketcap data
 const DEXSCREENER_API = 'https://api.dexscreener.com/latest/dex';
@@ -79,10 +80,67 @@ export async function getTokenPrices(mints: string[]): Promise<Map<string, Token
 }
 
 /**
+ * Get complete token data from Jupiter DataAPI (same API the frontend uses)
+ * This provides totalSupply, circulatingSupply, marketcap, price, etc.
+ */
+export async function getTokenDataFromJupiter(mint: string): Promise<TokenMarketcapData | null> {
+  try {
+    const response = await fetch(`${JUPITER_DATAPI}/v1/pools?assetIds=${mint}`);
+
+    if (!response.ok) {
+      log.debug({ status: response.status, mint }, 'Jupiter DataAPI request failed');
+      return null;
+    }
+
+    const data = (await response.json()) as {
+      pools?: Array<{
+        baseAsset: {
+          id: string;
+          totalSupply: number;
+          circSupply: number;
+          fdv: number;
+          mcap: number;
+          usdPrice: number;
+          stats24h?: {
+            priceChange: number;
+            buyVolume: number;
+            sellVolume: number;
+          };
+        };
+        volume24h: number;
+      }>;
+    };
+
+    if (!data.pools || data.pools.length === 0) {
+      log.debug({ mint }, 'No pools found in Jupiter DataAPI');
+      return null;
+    }
+
+    const pool = data.pools[0];
+    const baseAsset = pool.baseAsset;
+
+    return {
+      mint: baseAsset.id,
+      price: baseAsset.usdPrice || 0,
+      marketcap: baseAsset.fdv || baseAsset.mcap || 0,
+      totalSupply: baseAsset.totalSupply || 0,
+      circulatingSupply: baseAsset.circSupply || baseAsset.totalSupply || 0,
+      volume24h: pool.volume24h || 0,
+      priceChange24h: baseAsset.stats24h?.priceChange || 0,
+    };
+  } catch (error) {
+    log.debug({ error, mint }, 'Failed to fetch from Jupiter DataAPI');
+    return null;
+  }
+}
+
+/**
  * Get token marketcap data from DexScreener
+ * Note: DexScreener doesn't provide totalSupply, so we need to fetch it separately
  */
 export async function getTokenMarketcapFromDexScreener(
-  poolAddress: string
+  poolAddress: string,
+  baseMint?: string
 ): Promise<TokenMarketcapData | null> {
   try {
     const response = await fetch(`${DEXSCREENER_API}/pairs/solana/${poolAddress}`);
@@ -105,11 +163,16 @@ export async function getTokenMarketcapFromDexScreener(
       return null;
     }
 
+    const mint = baseMint || data.pair.baseToken.address;
+    
+    // Always fetch on-chain supply since DexScreener doesn't provide it
+    const supplyData = await getTokenSupply(mint);
+
     return {
-      mint: data.pair.baseToken.address,
+      mint,
       price: parseFloat(data.pair.priceUsd) || 0,
       marketcap: data.pair.fdv || 0,
-      totalSupply: 0, // DexScreener doesn't provide this
+      totalSupply: supplyData.totalSupply,
       volume24h: data.pair.volume?.h24 || 0,
       priceChange24h: data.pair.priceChange?.h24 || 0,
     };
@@ -156,17 +219,20 @@ export async function updatePoolMarketcap(pool: FlywheelPool): Promise<boolean> 
   const supabase = getSupabaseUntyped();
 
   try {
-    // For migrated pools, use DAMM pool address for DexScreener lookup
-    // For active pools (still on bonding curve), use the original pool address
-    const dexScreenerPoolAddress = pool.status === 'migrated' && pool.damm_pool_address
-      ? pool.damm_pool_address
-      : pool.pool_address;
-
-    // Try DexScreener first (has more complete data)
-    let marketcapData = await getTokenMarketcapFromDexScreener(dexScreenerPoolAddress);
+    // Try Jupiter DataAPI first (same API the frontend uses - provides totalSupply & circSupply)
+    let marketcapData = await getTokenDataFromJupiter(pool.base_mint);
 
     if (!marketcapData || marketcapData.marketcap === 0) {
-      // Fallback to Jupiter price + on-chain supply
+      // Fallback to DexScreener + on-chain supply
+      const dexScreenerPoolAddress = pool.status === 'migrated' && pool.damm_pool_address
+        ? pool.damm_pool_address
+        : pool.pool_address;
+      
+      marketcapData = await getTokenMarketcapFromDexScreener(dexScreenerPoolAddress, pool.base_mint);
+    }
+
+    if (!marketcapData || marketcapData.marketcap === 0) {
+      // Final fallback to Jupiter price + on-chain supply
       const prices = await getTokenPrices([pool.base_mint]);
       const priceData = prices.get(pool.base_mint);
 
@@ -178,6 +244,7 @@ export async function updatePoolMarketcap(pool: FlywheelPool): Promise<boolean> 
           price: priceData.price,
           marketcap: calculateMarketcap(priceData.price, supplyData.totalSupply),
           totalSupply: supplyData.totalSupply,
+          circulatingSupply: supplyData.totalSupply,
         };
       }
     }
@@ -187,6 +254,9 @@ export async function updatePoolMarketcap(pool: FlywheelPool): Promise<boolean> 
       return false;
     }
 
+    // Use circulatingSupply from Jupiter if available, otherwise use totalSupply
+    const circulatingSupply = marketcapData.circulatingSupply ?? marketcapData.totalSupply;
+
     // Update pool in database
     const { error } = await supabase
       .from('flywheel_pools')
@@ -194,6 +264,7 @@ export async function updatePoolMarketcap(pool: FlywheelPool): Promise<boolean> 
         current_marketcap_usd: marketcapData.marketcap,
         current_price_usd: marketcapData.price,
         total_supply: marketcapData.totalSupply,
+        circulating_supply: circulatingSupply,
         marketcap_updated_at: new Date().toISOString(),
       })
       .eq('id', pool.id);
@@ -215,6 +286,8 @@ export async function updatePoolMarketcap(pool: FlywheelPool): Promise<boolean> 
         poolAddress: pool.pool_address,
         marketcap: marketcapData.marketcap,
         price: marketcapData.price,
+        totalSupply: marketcapData.totalSupply,
+        circulatingSupply,
       },
       'Updated pool marketcap'
     );
